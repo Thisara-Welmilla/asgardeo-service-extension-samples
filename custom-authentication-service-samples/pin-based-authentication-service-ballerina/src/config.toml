@@ -1,0 +1,5 @@
+SERVER_PORT = 3000
+
+AUTH_MODE = "federated"
+BASE_WSO2_IAM_PROVIDER_URL = "https://localhost:9443"
+HOST_URL = "http://localhost:3000"

@@ -1,163 +1,101 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const fs = require("fs");
-const util = require('util');
-require("dotenv").config();
+import ballerina/http;
+import ballerina/io;
+import ballerina/log;
+import ballerina/config;
+import ballerina/json;
 
-const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+listener http:Listener appListener = new(3000);
 
-// In-memory session store
-const sessionStore = new Map();
+map<json> sessionStore = {};
 
-const path = require("path");
+string AUTH_MODE = config:getAsString("AUTH_MODE", "federated");
+string BASE_WSO2_IAM_PROVIDER_URL = config:getAsString("BASE_WSO2_IAM_PROVIDER_URL", "https://localhost:9443");
+string HOST_URL = config:getAsString("HOST_URL", "http://localhost:3000");
 
-// Configuration settings
-const config = {
-    AUTH_MODE: process.env.AUTH_MODE || "federated",
-    BASE_WSO2_IAM_PROVIDER_URL: process.env.BASE_WSO2_IAM_PROVIDER_URL || "https://localhost:9443",
-    HOST_URL: process.env.HOST_URL || "http://localhost:3000",
-};
+json userConfig = {};
 
-// Load users from environment or local file in development
-let userConfig = {};
-if (process.env.USER_CONFIG) {
-    userConfig = JSON.parse(process.env.USER_CONFIG);
-} else {
-    try {
-        const usersFilePath = path.resolve(__dirname, "../data/users.json");
-        userConfig = JSON.parse(fs.readFileSync(usersFilePath, "utf8"));
-        console.log("Loaded users from local file");
-    } catch (error) {
-        console.error("Error loading users.json:", error);
+function init() returns error? {
+    string? userConfigStr = config:getAsString("USER_CONFIG");
+    if (userConfigStr != null) {
+        userConfig = checkpanic json:fromString(userConfigStr);
+    } else {
+        string usersFilePath = "../data/users.json";
+        json fileContents = checkpanic fileutils:readFileAsString(usersFilePath);
+        userConfig = checkpanic json:fromString(fileContents);
+        io:println("Loaded users from local file");
     }
 }
 
-// Load users from config
-const getUserDatabase = () => {
-    const { federated = [], internal = [] } = userConfig;
-    return config.AUTH_MODE === "federated" ? federated : config.AUTH_MODE === "internal" ? internal : [...federated, ...internal];
-};
+// Get user database based on the current auth mode
+function getUserDatabase() returns json[] {
+    json[] federated = <json[]>userConfig["federated"];
+    json[] internal = <json[]>userConfig["internal"];
+    if (AUTH_MODE == "federated") {
+        return federated;
+    } else if (AUTH_MODE == "internal") {
+        return internal;
+    }
+    return federated.concat(internal);
+}
 
 // Utility function for structured error handling
-const handleError = (res, status, errorMessage, errorDescription) => {
-    const response = { actionStatus: "ERROR", errorMessage, errorDescription };
-    console.error(response);
-    return res.status(status).json(response);
-};
-
-// Log requests and responses
-const logRequest = (req) => {
-
-    console.log("Request Received", {
-        method: req.method,
-        url: req.originalUrl,
-        headers: req.headers,
-        body: util.inspect(req.body, { depth: null })
-    });
-};
-
-const logResponse = (req, resBody) => {
-    console.log("Response Sent", {
-        url: req.originalUrl,
-        responseBody: util.inspect(resBody, { depth: null })
-    });
-};
-
-// Health Check Endpoint
-app.get("/api/health", (req, res) => {
-    logRequest(req);
-    const response = { status: "ok", message: "Service is running." };
-    logResponse(req, response);
-    res.json(response);
-});
-
-// Handle Authentication Request
-app.post("/api/authenticate", (req, res) => {
-    logRequest(req);
-    const { flowId, event } = req.body;
-
-    if (!flowId) return handleError(res, 400, "missingFlowId", "Flow ID is required.");
-
-    if (!sessionStore.has(flowId)) {
-        sessionStore.set(flowId, { 
-            tenant: event.tenant.name, 
-            organization: event.organization ? event.organization.id : null, 
-            user: config.AUTH_MODE === "second_factor" ? event.user : null 
-        });
-        const pinEntryUrl = `${config.HOST_URL}/api/pin-entry?flowId=${flowId}`;
-        const response = { actionStatus: "INCOMPLETE", operations: [{ op: "redirect", url: pinEntryUrl }] };
-        logResponse(req, response);
-        return res.json(response);
-    }
-
-    const session = sessionStore.get(flowId);
-    const response = session.status === "SUCCESS" ? { actionStatus: "SUCCESS", data: { user: session.user } } :
-        { actionStatus: "FAILED", failureReason: "userNotFound", failureDescription: "Unable to find user for given credentials." };
-    logResponse(req, response);
-    return res.json(response);;
-});
-
-// Serve PIN Entry Page
-app.get("/api/pin-entry", (req, res) => {
-    logRequest(req);
-    const { flowId } = req.query;
-    if (!flowId || !sessionStore.has(flowId)) return res.status(400).send("Invalid or expired Flow ID.");
-
-    const userField = (config.AUTH_MODE === "federated" || config.AUTH_MODE === "internal") ? 
-        '<input type="text" name="username" required placeholder="Username" />' : 
-        '';
-
-    const response = `
-        <html>
-        <body>
-            <h2>Enter Your PIN</h2>
-            <form action="/api/validate-pin" method="POST">
-                <input type="hidden" name="flowId" value="${flowId}" />
-                ${userField}
-                <input type="password" name="pin" required placeholder="PIN"/>
-                <button type="submit">Submit</button>
-            </form>
-        </body>
-        </html>
-    `;
-    res.send(response);
-});
-
-// Validate PIN & Redirect
-app.post("/api/validate-pin", (req, res) => {
-    logRequest(req);
-    const { flowId, username, pin } = req.body;
-
-    if (!flowId || !sessionStore.has(flowId)) {
-        return handleError(res, 400, "validationError", "Session correlating data not found.");
-    }
-
-    const session = sessionStore.get(flowId);
-    const { tenant, organization, userId } = session;
-
-    const userDatabase = getUserDatabase();
-    let userAuthenticating = config.AUTH_MODE === "second_factor" ? userDatabase.find(u => u.id === userId) : userDatabase.find(u => u.username === username);
-    let userReferencedForPin = userDatabase.find(u => u.pin === pin);
-
-    if (userAuthenticating && userReferencedForPin && userAuthenticating.id === userReferencedForPin.id) {
-        sessionStore.set(flowId, { status: "SUCCESS", user: userReferencedForPin.data });
-    } else {
-        sessionStore.set(flowId, { status: "FAILED" });
-    }
-
-    const redirectUrl = organization ? 
-        `${config.BASE_WSO2_IAM_PROVIDER_URL}/o/${organization}/commonauth?flowId=${flowId}` : 
-        `${config.BASE_WSO2_IAM_PROVIDER_URL}/t/${tenant}/commonauth?flowId=${flowId}`;
-    logResponse(req, { redirectingTo: redirectUrl });
-    return res.redirect(redirectUrl);
-});
-
-// Start server
-if (require.main === module) {
-    app.listen(3000, () => console.log(`Server running on http://localhost:3000`));
+function handleError(http:Caller caller, int status, string errorMessage, string errorDescription) returns error? {
+    json response = { "actionStatus": "ERROR", "errorMessage": errorMessage, "errorDescription": errorDescription };
+    checkpanic caller->respond(response, status);
 }
 
-// Export app
-module.exports = app;
+// Log requests and responses
+function logRequest(http:Caller caller, http:CallerRequest request) {
+    log:printInfo("Request Received", {"method": request.method.toString(), "url": request.url.toString(), "headers": request.headers, "body": request.body});
+}
+
+function logResponse(http:Caller caller, json resBody) {
+    log:printInfo("Response Sent", {"url": caller.getRequest().url.toString(), "responseBody": resBody});
+}
+
+// Health Check Endpoint
+service /api on listener appListener {
+
+    resource function get health(http:Caller caller) returns error? {
+        logRequest(caller, caller.getRequest());
+        json response = { "status": "ok", "message": "Service is running." };
+        logResponse(caller, response);
+        checkpanic caller->respond(response);
+    }
+
+    // Authentication Request
+    resource function post authenticate(http:Caller caller, json body) returns error? {
+        logRequest(caller, caller.getRequest());
+        string flowId = check body["flowId"].toString();
+        json event = <json>body["event"];
+
+        if (flowId == "") {
+            return handleError(caller, 400, "missingFlowId", "Flow ID is required.");
+        }
+
+        if (!sessionStore.hasKey(flowId)) {
+            sessionStore[flowId] = {
+                "tenant": event["tenant"]["name"],
+                "organization": event["organization"] ? event["organization"]["id"] : null,
+                "user": (AUTH_MODE == "second_factor") ? event["user"] : null
+            };
+            string pinEntryUrl = HOST_URL + "/api/pin-entry?flowId=" + flowId;
+            json response = { "actionStatus": "INCOMPLETE", "operations": [{ "op": "redirect", "url": pinEntryUrl }] };
+            logResponse(caller, response);
+            checkpanic caller->respond(response);
+        } else {
+            json session = <json>sessionStore[flowId];
+            json response = (session["status"] == "SUCCESS") ?
+                { "actionStatus": "SUCCESS", "data": { "user": session["user"] } } :
+                { "actionStatus": "FAILED", "failureReason": "userNotFound", "failureDescription": "Unable to find user for given credentials." };
+            logResponse(caller, response);
+            checkpanic caller->respond(response);
+        }
+    }
+
+    // Serve PIN Entry Page
+    resource function get pinEntry(http:Caller caller, string flowId) returns error? {
+        logRequest(caller, caller.getRequest());
+        if (flowId == "" || !sessionStore.hasKey(flowId)) {
+            checkpanic caller->respond("Invalid or expired Flow ID.", 400);
+

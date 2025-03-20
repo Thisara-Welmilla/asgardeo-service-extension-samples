@@ -1,0 +1,58 @@
+{
+  "federated": [
+      {
+          "id": "8a2b49b5-91fa-4f3b-b2d8-d12f7f77dcaa",
+          "username": "peterp",
+          "pin": "5678",
+          "data": {
+            "id": "8a2b49b5-91fa-4f3b-b2d8-d12f7f77dcaa",
+            "claims": [
+              {
+                "uri": "http://wso2.org/claims/username",
+                "value": "peterp@goodwill.com"
+              },
+              {
+                "uri": "http://wso2.org/claims/emailaddress",
+                "value": "peterp@goodwill.com"
+              },
+              {
+                "uri": "http://wso2.org/claims/lastname",
+                "value": "Parker"
+              },
+              {
+                "uri": "http://wso2.org/claims/givenname",
+                "value": "Peter"
+              }
+            ]
+          }
+        }
+  ],
+  "internal": [
+    {
+      "id": "ed8fa3ee-e1d0-43c7-bf1b-afe05dee4838",
+      "username": "emily@aol.com",
+      "pin": "1234",
+      "data": {
+        "id": "ed8fa3ee-e1d0-43c7-bf1b-afe05dee4838",
+        "claims": [
+          {
+            "uri": "http://wso2.org/claims/username",
+            "value": "emily@aol.com"
+          },
+          {
+            "uri": "http://wso2.org/claims/emailaddress",
+            "value": "emily@aol.com"
+          },
+          {
+            "uri": "http://wso2.org/claims/lastname",
+            "value": "Ellon"
+          },
+          {
+            "uri": "http://wso2.org/claims/givenname",
+            "value": "Emily"
+          }
+        ]
+      }
+    }
+  ]
+}
